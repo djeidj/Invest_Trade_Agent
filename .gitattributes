@@ -1,0 +1,2 @@
+# 统一换行符:仓库和所有工作副本一律 LF,杜绝跨平台的假 diff
+* text=auto eol=lf
