@@ -59,3 +59,24 @@ def upsert_news(rows: list[dict[str, Any]]) -> int:
             rows,
         )
     return len(rows)
+
+
+def get_bars(symbol: str, days: int = 10) -> list[dict[str, Any]]:
+    """读某只股票最近 N 个交易日K线,返回按日期正序。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM daily_bar WHERE symbol = ? ORDER BY date DESC LIMIT ?",
+            (symbol, days),
+        ).fetchall()
+    return [dict(r) for r in reversed(rows)]
+
+
+def get_news(symbol: str, limit: int = 5) -> list[dict[str, Any]]:
+    """读某只股票最近 N 条新闻。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT title, content, source, publish_time FROM news"
+            " WHERE symbol = ? ORDER BY publish_time DESC LIMIT ?",
+            (symbol, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
