@@ -119,18 +119,23 @@ _TOOLS = {
 }
 
 
-def execute(name: str, arguments_json: str) -> str:
-    """执行一次工具调用,结果以字符串返回(要塞回模型上下文,注意精简)。"""
+def execute_dict(name: str, args: dict) -> str:
+    """执行一次工具调用(dict 入参版,给 LangGraph 节点等结构化调用方使用)。"""
     fn = _TOOLS.get(name)
     if fn is None:
         return f"未知工具 {name}。可用工具: {', '.join(_TOOLS)}"
-    try:
-        args = json.loads(arguments_json) if arguments_json else {}
-    except json.JSONDecodeError:
-        return f"参数不是合法JSON: {arguments_json!r}"
     try:
         return str(fn(**args))
     except TypeError as e:
         return f"参数不匹配: {e}。参数定义见工具 schema,请修正后重试。"
     except Exception as e:  # noqa: BLE001 工具故障转成文字反馈给模型
         return f"工具执行失败: {e}"
+
+
+def execute(name: str, arguments_json: str) -> str:
+    """执行一次工具调用(字符串入参版:模型吐的 arguments 是原始 JSON 文本)。"""
+    try:
+        args = json.loads(arguments_json) if arguments_json else {}
+    except json.JSONDecodeError:
+        return f"参数不是合法JSON: {arguments_json!r}"
+    return execute_dict(name, args)

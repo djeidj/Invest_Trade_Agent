@@ -32,8 +32,8 @@ _EM_COLUMNS = {
 # 腾讯源字段语义(2026-10-07 经 scripts/check_tx_amount 量纲检验+交叉验证):
 #   volume=成交量(股), amount=成交额(元), turnover=换手率(小数,暂不使用)
 # 全库统一用"股"作成交量单位。
-# TODO: 东财成交量单位(文档称"手")未实测——东财恢复后用 scripts/check_volume_unit
-# 的比值检验:ratio≈1 为股(无需换算),≈100 为手(需×100转成股)
+# 东财成交量单位已实测为"手"(2026-10-13:库内东财行 ratio≈100,腾讯行 ratio≈1),
+# 在 _fetch_from_east 中 ×100 转成"股"统一单位——否则同库两种单位,工具标签必然说谎
 _TX_COLUMNS = {
     "date": "date",
     "open": "open",
@@ -85,6 +85,7 @@ def _fetch_from_east(symbol: str, days: int) -> list[dict]:
     df = ak.stock_zh_a_hist(
         symbol=symbol, period="daily", start_date=start, end_date=end, adjust="qfq"
     )
+    df["成交量"] = df["成交量"] * 100  # 东财单位是手,×100统一成股(与腾讯源对齐)
     return _to_rows(df, _EM_COLUMNS, symbol)
 
 
