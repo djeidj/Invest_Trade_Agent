@@ -33,7 +33,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from openai import OpenAI
 from pydantic import BaseModel
 
-from agent.stream import run_agent_stream
+from agent.trace import traced_stream  # D7:换观测版引擎——事件透传+旁路落库
 from config import GLM_API_KEY, GLM_BASE_URL
 
 app = FastAPI(title="TradeInvestAgent")
@@ -61,7 +61,7 @@ def chat(req: ChatRequest):
     ensure_ascii=False:中文以原文传输而非 \\uXXXX 转义,包体小、可读。
     """
     def sse():
-        for ev in run_agent_stream(client, req.question):
+        for ev in traced_stream(client, req.question):
             yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(sse(), media_type="text/event-stream")

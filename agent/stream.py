@@ -19,7 +19,18 @@ D2-D5 的 create() 等完整响应一次返回;stream=True 返回"分片迭代�
 教学点3【熔断逻辑原样保留】:
 流式不改变 ReAct 循环结构:有 tool_calls → 执行回填再循环;
 没有 → 最终回答。max_steps 熔断照样要有,只是强制总结也改成了流式。
+
+教学点4【D7 埋点:流式下的用量藏在哪——实测为准】:
+非流式 resp.usage 直接可读;流式的用量要自己从帧里捡。
+OpenAI 官方规范:传 stream_options={"include_usage": True},
+usage 挂在最后一个"空 choices"收尾帧上。
+GLM 实测(diag_usage.py 差分诊断):不传 stream_options 也在最后一帧给
+usage,且那一帧 choices=1、finish=stop——和规范不一样!
+结论:抓取逻辑不能只盯着"空 choices 帧",要每一帧都先摘 usage。
+规范说一套,实现可能另一套——差分诊断是唯一实锤。
 """
+import time
+
 from openai import OpenAI
 
 from agent.loop import SYSTEM_PROMPT
@@ -41,15 +52,23 @@ def run_agent_stream(client: OpenAI, question: str, max_steps: int = 8):
     ]
 
     try:
-        for _ in range(1, max_steps + 1):  # 步数熔断计数,循环体内用不到所以用 _ 占位
+        for step in range(1, max_steps + 1):  # 步数熔断计数(step 用于 usage 事件标注)
+            t0 = time.perf_counter()  # 本轮 LLM 调用计时起点
+            usage = None  # token 用量,等收尾帧带来
             stream = client.chat.completions.create(
-                model=GLM_MODEL, messages=messages, tools=TOOL_DEFS, stream=True
+                model=GLM_MODEL, messages=messages, tools=TOOL_DEFS, stream=True,
+                stream_options={"include_usage": True},  # OpenAI 规范要传才给 usage;GLM 不传也给,保留以兼容两家
             )
             content_parts: list[str] = []
             tool_calls: dict[int, dict] = {}  # index -> {"id","name","arguments"}
 
             for chunk in stream:
-                if not chunk.choices:  # 个别厂商会推无 choices 的收尾帧,跳过
+                # 实测(diag_usage.py):GLM 把 usage 挂在最后一帧(choices=1,finish=stop),
+                # OpenAI 规范是挂在独立的空 choices 收尾帧——兼容两家的写法:
+                # 每帧先摘 usage,再处理 choices
+                if getattr(chunk, "usage", None):
+                    usage = chunk.usage
+                if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
                 # 文字增量:直接转发,前端即时显示
@@ -68,6 +87,15 @@ def run_agent_stream(client: OpenAI, question: str, max_steps: int = 8):
                         slot["name"] += tc.function.name
                     if tc.function and tc.function.arguments:
                         slot["arguments"] += tc.function.arguments
+
+            # D7 埋点:本轮 LLM 调用的用量+耗时,作为一个事件发给下游
+            yield {
+                "type": "usage",
+                "step": step,
+                "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+                "latency_ms": round((time.perf_counter() - t0) * 1000),
+            }
 
             if not tool_calls:  # 没有工具请求 = 最终回答已经流完了
                 yield {"type": "final", "text": "".join(content_parts)}
@@ -90,27 +118,44 @@ def run_agent_stream(client: OpenAI, question: str, max_steps: int = 8):
             )
             for s in tool_calls.values():
                 yield {"type": "tool_call", "name": s["name"], "args": s["arguments"]}
+                t0 = time.perf_counter()  # 工具执行计时(本地 SQLite,毫秒级)
                 result = execute(s["name"], s["arguments"])
-                yield {"type": "tool_result", "name": s["name"], "preview": result[:120]}
+                yield {
+                    "type": "tool_result",
+                    "name": s["name"],
+                    "preview": result[:120],
+                    "latency_ms": round((time.perf_counter() - t0) * 1000),
+                }
                 messages.append(
                     {"role": "tool", "tool_call_id": s["id"], "content": result}
                 )
 
         # --- 熔断:步数用尽,不带 tools 强制总结(也用流式转发) ---
         yield {"type": "tool_call", "name": "(已达步数上限,强制总结)", "args": ""}
+        t0 = time.perf_counter()
+        usage = None
         stream = client.chat.completions.create(
             model=GLM_MODEL,
             messages=messages
             + [{"role": "user", "content": "请基于以上已查到的信息直接回答,不要再调用工具。"}],
             stream=True,
+            stream_options={"include_usage": True},
         )
         parts: list[str] = []
         for chunk in stream:
+            if getattr(chunk, "usage", None):  # 同主循环:每帧先摘 usage
+                usage = chunk.usage
             if not chunk.choices:
                 continue
             if chunk.choices[0].delta.content:
                 parts.append(chunk.choices[0].delta.content)
                 yield {"type": "token", "text": chunk.choices[0].delta.content}
+        yield {
+            "type": "usage", "step": "forced",
+            "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+            "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+            "latency_ms": round((time.perf_counter() - t0) * 1000),
+        }
         yield {"type": "final", "text": "".join(parts)}
     except Exception as e:  # noqa: BLE001 出错也要以事件形式告诉前端,不能让流悄悄断掉
         yield {"type": "error", "text": f"agent 运行出错: {e}"}

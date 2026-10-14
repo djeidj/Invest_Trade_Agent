@@ -19,6 +19,13 @@ GLM_API_KEY = os.getenv("GLM_API_KEY", "")
 GLM_BASE_URL = os.getenv("GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/")
 GLM_MODEL = os.getenv("GLM_MODEL", "glm-5.3-flash")
 
+# --- 牌价(元/百万 tokens),D7 成本核算用 ---
+# 查证:GLM-4.5-Air 牌价为输入0.8/输出2元每百万tokens(以官网定价页为准);
+# 免费档模型把两个值改成 0 即可,核算机制不变。
+# 注意:牌价只影响新账单——历史会话的 cost 已按当时牌价"快照"入库,不追溯改写。
+GLM_PRICE_IN = float(os.getenv("GLM_PRICE_IN", "0.8"))
+GLM_PRICE_OUT = float(os.getenv("GLM_PRICE_OUT", "2.0"))
+
 # --- 自选股池:A股6位代码 -> 名称 ---
 # 改这里就能换股票池,业务代码不用动
 WATCHLIST: dict[str, str] = {
