@@ -21,6 +21,7 @@ import json
 from typing import Any
 
 from config import WATCHLIST
+from rag import embedder, store
 from storage import db
 
 
@@ -60,6 +61,28 @@ def get_stock_news(symbol: str, limit: int = 5) -> str:
         f"[{r['publish_time']}] {r['title']}({r['source']}): {r['content']}" for r in rows
     ]
     return f"{WATCHLIST.get(code, code)} 最近{len(rows)}条新闻:\n" + "\n".join(items)
+
+
+def search_news(query: str, symbol: str = "", top_k: int = 4) -> str:
+    """语义检索新闻语料(RAG)。返回带[编号]的片段,模型引用时必须标注来源。
+
+    和 get_stock_news(按股票列最新,关键词型)互补:
+    search_news 按"语义相似"找内容,能命中标题里没有关键词的报道。
+    """
+    hits = store.search(
+        embedder.embed_one(query),
+        top_k=top_k,
+        symbol=_resolve_symbol(symbol) if symbol else "",
+    )
+    if not hits:
+        # 防幻觉设计:检索不到就明说,让模型对用户诚实
+        return "新闻语料中未检索到相关内容。请如实告知用户语料中没有相关信息,不要编造。"
+    lines = [
+        f"[{i + 1}] [{h['publish_time']}] {h['title']}({h['source']}, 相关度{h['score']:.2f})\n"
+        f"    {h['text'][:200]}"
+        for i, h in enumerate(hits)
+    ]
+    return "检索到以下新闻片段(回答引用时必须标注[编号]和来源):\n" + "\n".join(lines)
 
 
 # --- 工具 schema:给模型看的"菜单" ---
@@ -110,12 +133,45 @@ TOOL_DEFS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_news",
+            "description": (
+                "语义检索新闻语料库(库内全部个股新闻的正文)。"
+                "当用户询问某条报道的具体内容/原文、或 get_stock_news 的标题不足以回答时调用。"
+                "query 用一句自然的中文描述想找的内容,可带 symbol 限定某只股票。"
+                "返回带[编号]的片段,回答时必须标注[编号]和来源。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "想找的内容,如'i茅台APP维护'",
+                    },
+                    "symbol": {
+                        "type": "string",
+                        "description": "可选,限定某只股票的6位代码",
+                        "default": "",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "返回条数,默认4",
+                        "default": 4,
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 # --- 执行器:给机器看的 ---
 _TOOLS = {
     "get_daily_bars": get_daily_bars,
     "get_stock_news": get_stock_news,
+    "search_news": search_news,
 }
 
 
