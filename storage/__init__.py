@@ -1,3 +1,3 @@
-from storage import db
+from . import vecdb
 
-__all__ = ["db"]
+__all__ = ["vecdb"]
