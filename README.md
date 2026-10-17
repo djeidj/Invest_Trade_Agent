@@ -6,26 +6,27 @@
 ## 架构
 
 ```
-应用层   app/          FastAPI 调试台:聊天 + 工具轨迹 + RAG 状态(SSE 流式 /api/chat/stream)
-Agent层  agent/        create_agent(model, tools, system_prompt, checkpointer) 一行装配
+应用层   app/          FastAPI 调试台:聊天 + 工具轨迹 + RAG 状态(SSE 流式 /api/chat/stream,会话增删查)
+Agent层  agent/        create_agent(model, tools, system_prompt, checkpointer, SummarizationMiddleware)
 工具层   tools/        @tool 封装:行情/财报直连、新闻读穿式 RAG、通用工具
 存储层   storage/      vecdb.py = Chroma 向量库(按语料类别分 collection)
-配置层   config/       settings(GLM/embedding/路径/RAGCollection 枚举) + sys_prompt(工作流提示)
+配置层   config/       settings(GLM/embedding/路径/RAGCollection 枚举/压缩阈值) + sys_prompt(工作流提示)
 数据源   akshare       东财/腾讯/新浪 多源,按数据类型选、带 failover
 ```
 
 ## 目录
 
 ```
-agent/agent.py        create_agent 装配 + run_agent_turn(返回 answer + trace) + CLI 入口
+agent/agent.py        create_agent 装配 + run_agent_turn / stream_agent_turn(返回 answer + trace) + 会话 list/delete + CLI
 tools/stock_tools.py  get_stock_price / get_stock_history / get_financial_report / ingest_stock_news
 tools/rag_tools.py    query_rag(collection 参数用 RAGCollection 枚举约束)
 tools/normal_tools.py get_weather(通用工具占位)
 storage/vecdb.py      put / search / list_collections(Chroma, 单 collection per 类别)
-config/settings.py    GLM/embedding 配置 + RAGCollection(StrEnum)
+config/settings.py    GLM/embedding 配置 + RAGCollection(StrEnum) + 上下文压缩阈值
 config/sys_prompt.py  投研工作流系统提示
 app/main.py           FastAPI 路由(只做传输,不含智能)
 app/static/index.html 调试前端
+tests/                pytest:纯逻辑 / 工具(akshare mock)/ vecdb(临时库隔离)/ API(SSE 传输)
 ```
 
 ## 工具与数据源
@@ -62,6 +63,9 @@ uv run python -m agent.agent
 
 # 3b. 起调试台,浏览器打开 http://127.0.0.1:8000
 uv run uvicorn app.main:app --reload
+
+# 4. 跑测试(akshare/LLM 全 mock,向量测落临时目录,不污染 data/)
+uv run python -m pytest -q
 ```
 
 ## 关键设计取舍(可作为面试讨论点)
@@ -71,13 +75,17 @@ uv run uvicorn app.main:app --reload
 - **工具结果直接进上下文,不自建缓存库**:有 checkpointer 做会话记忆,再叠一层取数缓存是重复造轮子。
 - **RAG 只用于非结构化文本**:向量检索的价值在"模糊问题→相关段落",数字/表格走精确查。
 - **collection 名/数据源由代码定,不让模型现编**:枚举白名单避免模型乱填污染索引。
+- **上下文压缩用官方 `SummarizationMiddleware`,不自己写**:消息 token 超阈值自动摘要旧消息、保留近期且
+  不拆散 AI/Tool 消息对;能用框架件就不重造。
+- **测试全 mock 外部依赖 + 隔离临时目录**:akshare/LLM 打桩、向量读写落 `tmp_path`,保证确定性且不污染真实数据。
 
 ## 现状与待办
 
-已完成:create_agent 编排、多源容灾数据工具、读穿式新闻 RAG、FastAPI 调试台(SSE 流式 + 历史会话切换)。
+已完成:create_agent 编排 + 多轮记忆、`SummarizationMiddleware` 上下文压缩、多源容灾数据工具、读穿式新闻 RAG、
+FastAPI 调试台(SSE 流式 + 历史会话增删查)、pytest 单测/传输测。
 
 尚未做(诚实标注):
-- 自动化测试(单测/回归)
+- 端到端测试与 CI 流水线(当前是单元/传输层)
 - 可观测性(tracing / token 成本核算)
 - IM 集成(飞书/企业微信)、定时任务、部署上线
 - 更多文本语料(研报/公告)接入 RAG
